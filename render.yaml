@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: qfqa-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    domains:
+      - api.qfqa.eu
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        fromService:
+          type: web
+          name: qfqa-backend
+          property: port
+      - key: FRONTEND_URL
+        value: https://qfqa.netlify.app
