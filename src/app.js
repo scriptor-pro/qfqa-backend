@@ -1,23 +1,73 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
+const { connectDatabase } = require('./utils/database');
+const memoryDB = require('./utils/memory-db');
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  }
+}));
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: {
+    error: 'Trop de requêtes, veuillez réessayer plus tard',
+    retryAfter: '15 minutes'
+  },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5, // limit auth requests
+  message: {
+    error: 'Trop de tentatives de connexion, veuillez réessayer plus tard',
+    retryAfter: '15 minutes'
+  }
+});
+
+app.use('/api/auth', authLimiter);
+app.use('/api', limiter);
+
+// CORS configuration
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' 
+    ? ['https://qfqa.netlify.app', 'https://www.qfqa.netlify.app', 'https://api.qfqa.eu']
+    : ['http://localhost:3000', process.env.FRONTEND_URL || 'http://localhost:3000'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Body parsing middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Import des routes
 const authRoutes = require('./routes/auth');
 const scheduleRoutes = require('./routes/schedule');
 const userRoutes = require('./routes/user');
-
-// Middleware
-app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://qfqa.netlify.app', 'https://www.qfqa.netlify.app']
-    : ['http://localhost:3000', process.env.FRONTEND_URL],
-  credentials: true
-}));
-app.use(express.json());
 
 // Middleware de logging simple
 app.use((req, res, next) => {
@@ -71,11 +121,37 @@ app.use((req, res) => {
   });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 QFQA Backend server running on port ${PORT}`);
-  console.log(`📱 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔧 API test: http://localhost:${PORT}/api/test`);
+// Initialize database and start server
+const startServer = async () => {
+  // Try to connect to database
+  const dbConnected = await connectDatabase();
+  
+  // If no database, initialize in-memory storage with sample data
+  if (!dbConnected && process.env.NODE_ENV === 'development') {
+    console.log('🧠 Initializing in-memory database with sample data...');
+    await memoryDB.initializeSampleData();
+  }
+  
+  // Start server
+  app.listen(PORT, () => {
+    console.log(`🚀 QFQA Backend server running on port ${PORT}`);
+    console.log(`📱 Health check: http://localhost:${PORT}/health`);
+    console.log(`🔧 API test: http://localhost:${PORT}/api/test`);
+    console.log(`🔒 Security: Helmet, Rate limiting, CORS enabled`);
+    if (dbConnected) {
+      console.log(`🗄️  Database: MongoDB connected`);
+    } else {
+      console.log(`🧠 Database: In-memory storage (development mode)`);
+    }
+  });
+};
+
+startServer().catch(console.error);
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('Shutting down server...');
+  process.exit(0);
 });
 
 module.exports = app;
